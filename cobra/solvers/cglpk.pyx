@@ -8,14 +8,19 @@ from cpython.version cimport PY_MAJOR_VERSION
 
 from tempfile import NamedTemporaryFile as _NamedTemporaryFile  # for pickling
 from os import unlink as _unlink
+import sys
+from contextlib import contextmanager as _contextmanager
 from warnings import warn as _warn
 
+from six import StringIO
 try:
     from sympy import Basic, Number
 except:
     class Basic:
         pass
     Number = Basic
+
+from cobra.core.solution import LegacySolution
 
 __glpk_version__ = str(glp_version())
 _SUPPORTS_MILP = True
@@ -30,6 +35,22 @@ The GNU Multiple Precision Arithmetic Library (GMP) is released under the GPL.
 The source can be downloaded from https://gmplib.org/
 
 """
+
+# this is to stop errors in glpk, where "constructing initial basis" messages
+# are printed, even when the message level is set to off.
+@_contextmanager
+def quiet(verbose):
+    if verbose:
+        yield
+    else:
+        new_out, new_err = StringIO(), StringIO()
+        old_out, old_err = sys.stdout, sys.stderr
+        try:
+            sys.stdout, sys.stderr = new_out, new_err
+            yield
+        finally:
+            sys.stdout, sys.stderr = old_out, old_err
+
 
 cdef dict ERROR_CODES = {
     GLP_EBADB: "GLP_EBADB",
@@ -265,6 +286,8 @@ cdef class GLP:
             if indexes[i + 1] == met_index:
                 values[i + 1] = value
                 glp_set_mat_col(self.glp, rxn_index, col_length, indexes, values)
+                free(indexes)
+                free(values)
                 return
         # need to add a new entry
         indexes[col_length + 1] = met_index
@@ -296,7 +319,8 @@ cdef class GLP:
         self.parameters.tm_lim = time_limit
         
         if fast_status != 0:
-            glp_adv_basis(glp, 0)
+            with quiet(self.parameters.msg_lev):
+                glp_adv_basis(glp, 0)
             check_error(glp_simplex(glp, &self.parameters))
         self.parameters.tm_lim = time_limit
         if self.exact:
@@ -426,11 +450,10 @@ cdef class GLP:
     def format_solution(self, cobra_model):
         cdef int i, m, n
         cdef glp_prob *glp = self.glp
-        Solution = cobra_model.solution.__class__
         status = self.get_status()
         if status != "optimal":  # todo handle other possible
-            return Solution(None, status=status)
-        solution = Solution(self.get_objective_value(), status=status)
+            return LegacySolution(None, status=status)
+        solution = LegacySolution(self.get_objective_value(), status=status)
         m = glp_get_num_rows(glp)
         n = glp_get_num_cols(glp)
         x = [0] * n

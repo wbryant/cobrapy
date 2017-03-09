@@ -1,9 +1,171 @@
-from ..manipulation import modify
+# -*- coding: utf-8 -*-
+
+from __future__ import absolute_import
+
+import logging
+from itertools import chain
+
+import sympy
+
+from cobra.util import solver as sutil
+from cobra.manipulation.modify import (
+    convert_to_irreversible, revert_to_reversible)
+from cobra.util import linear_reaction_coefficients, set_objective
+from cobra.core.solution import get_solution
+
+add = sympy.Add._from_args
+mul = sympy.Mul._from_args
+LOGGER = logging.getLogger(__name__)
 
 
 def optimize_minimal_flux(model, already_irreversible=False,
-                          **optimize_kwargs):
-    """Perform basic pFBA (parsimonius FBA) and minimize total flux.
+                          fraction_of_optimum=1.0, solver=None,
+                          desired_objective_value=None, objective=None,
+                          reactions=None, **optimize_kwargs):
+    """Perform basic pFBA (parsimonious Enzyme Usage Flux Balance Analysis)
+    to minimize total flux.
+
+    pFBA [1] adds the minimization of all fluxes the the objective of the
+    model. This approach is motivated by the idea that high fluxes have a
+    higher enzyme turn-over and that since producing enzymes is costly,
+    the cell will try to minimize overall flux while still maximizing the
+    original objective function, e.g. the growth rate.
+
+    Parameters
+    ----------
+    model : cobra.Model
+        The model
+    already_irreversible : bool, optional
+        By default, the model is converted to an irreversible one.
+        However, if the model is already irreversible, this step can be
+        skipped. Ignored for optlang solvers as not relevant.
+    fraction_of_optimum : float, optional
+        Fraction of optimum which must be maintained. The original objective
+        reaction is constrained to be greater than maximal_value *
+        fraction_of_optimum.
+    solver : str, optional
+        Name of the solver to be used. If None it will respect the solver set
+        in the model (model.solver).
+    desired_objective_value : float, optional
+        A desired objective value for the minimal solution that bypasses the
+        initial optimization result. Ignored for optlang solvers, instead,
+        define your objective separately and pass using the `objective`
+        argument.
+    objective : dict or model.problem.Objective
+        A desired objective to use during optimization in addition to the
+        pFBA objective. Dictionaries (reaction as key, coefficient as value)
+        can be used for linear objectives. Not used for non-optlang solvers.
+    reactions : iterable
+        List of reactions or reaction identifiers. Implies `return_frame` to
+        be true. Only return fluxes for the given reactions. Faster than
+        fetching all fluxes if only a few are needed. Only supported for
+        optlang solvers.
+    **optimize_kwargs : additional arguments for legacy solver, optional
+        Additional arguments passed to the legacy solver. Ignored for
+        optlang solver (those can be configured using
+         model.solver.configuration).
+
+    Returns
+    -------
+    cobra.Solution
+        The solution object to the optimized model with pFBA constraints added.
+
+    References
+    ----------
+    .. [1] Lewis, N. E., Hixson, K. K., Conrad, T. M., Lerman, J. A.,
+       Charusanti, P., Polpitiya, A. D., Palsson, B. O. (2010). Omic data
+       from evolved E. coli are consistent with computed optimal growth from
+       genome-scale models. Molecular Systems Biology, 6,
+       390. doi:10.1038/msb.2010.47
+
+    """
+    legacy, solver = sutil.choose_solver(model, solver)
+    if legacy:
+        return _optimize_minimal_flux_legacy(
+            model, already_irreversible=already_irreversible,
+            fraction_of_optimum=fraction_of_optimum, solver=solver,
+            desired_objective_value=desired_objective_value,
+            **optimize_kwargs)
+    else:
+        model.solver = solver
+        return _optimize_minimal_flux_optlang(
+            model, objective=objective,
+            fraction_of_optimum=fraction_of_optimum, reactions=reactions)
+
+
+def add_pfba(model, objective=None, fraction_of_optimum=1.0):
+    """Add pFBA objective
+
+    Add objective to minimize the summed flux of all reactions to the
+    current objective.
+
+    See Also
+    -------
+    optimize_minimal_flux
+
+    Parameters
+    ----------
+    model : cobra.Model
+        The model to add the objective to
+    objective :
+        An objective to set in combination with the pFBA objective.
+    fraction_of_optimum : float
+        Fraction of optimum which must be maintained. The original objective
+        reaction is constrained to be greater than maximal_value *
+        fraction_of_optimum.
+    """
+    if objective is not None:
+        model.objective = objective
+    if model.solver.objective.name == '_pfba_objective':
+        raise ValueError('model already has pfba objective')
+    sutil.fix_objective_as_constraint(model, fraction=fraction_of_optimum)
+    reaction_variables = ((rxn.forward_variable, rxn.reverse_variable)
+                          for rxn in model.reactions)
+    variables = chain(*reaction_variables)
+    pfba_objective = model.problem.Objective(add(
+        [mul((sympy.singleton.S.One, variable))
+         for variable in variables]), direction='min', sloppy=True,
+        name="_pfba_objective")
+    set_objective(model, pfba_objective)
+
+
+def _optimize_minimal_flux_optlang(model, objective=None, reactions=None,
+                                   fraction_of_optimum=1.0):
+    """Helper function to perform pFBA with the optlang interface
+
+    Not meant to be used directly.
+
+    Parameters
+    ----------
+    model : a cobra model
+        The model to perform pFBA on
+    objective :
+        An objective to use in addition to the pFBA constraints.
+    reactions : iterable
+        List of reactions or reaction identifiers.
+
+    Returns
+    -------
+    cobra.Solution
+        The solution to the pFBA optimization.
+
+    Updates everything in-place, returns model to original state at end.
+    """
+    reactions = model.reactions if reactions is None \
+        else model.reactions.get_by_any(reactions)
+    with model as m:
+        add_pfba(m, objective=objective,
+                 fraction_of_optimum=fraction_of_optimum)
+        m.solver.optimize()
+        solution = get_solution(m, reactions=reactions)
+    return solution
+
+
+def _optimize_minimal_flux_legacy(model, solver, already_irreversible=False,
+                                  fraction_of_optimum=1.0,
+                                  desired_objective_value=None,
+                                  **optimize_kwargs):
+    """Perform basic pFBA (parsimonious FBA) and minimize total flux.
 
     The function attempts to act as a drop-in replacement for optimize. It
     will make the reaction reversible and perform an optimization, then
@@ -11,53 +173,70 @@ def optimize_minimal_flux(model, already_irreversible=False,
     flux. Finally, it will convert the reaction back to the irreversible
     form it was in before. See http://dx.doi.org/10.1038/msb.2010.47
 
-    model : :class:`~cobra.core.Model` object
-
+    Parameters
+    ----------
+    model : cobra.Model
+        The model
+    solver : solver
+        The solver object to use
     already_irreversible : bool, optional
         By default, the model is converted to an irreversible one.
         However, if the model is already irreversible, this step can be
-        skipped.
+        skipped
+    fraction_of_optimum : float, optional
+        Fraction of optimum which must be maintained. The original objective
+        reaction is constrained to be greater than maximal_value *
+        fraction_of_optimum. By default, this option is specified to be 1.0
+    desired_objective_value : float, optional
+        A desired objective value for the minimal solution that bypasses the
+        initial optimization result.
 
+    Updates everything in-place, returns model to original state at end.
     """
+    objective_reactions = linear_reaction_coefficients(model)
+    if len(objective_reactions) > 1:
+        raise ValueError('optimize_minimal_flux only supports models with'
+                         ' a single objective function')
+
+    if 'objective_sense' in optimize_kwargs:
+        if optimize_kwargs['objective_sense'] == 'minimize':
+            raise ValueError(
+                'Minimization not supported in optimize_minimal_flux')
+        optimize_kwargs.pop('objective_sense', None)
+
     if not already_irreversible:
-        modify.convert_to_irreversible(model)
-    model.optimize(**optimize_kwargs)
-    # if the problem is infeasible
-    if model.solution.f is None:
-        raise Exception("model could not be solved")
-    old_f = model.solution.f
-    old_objective_coefficients = {}
-    old_lower_bounds = {}
-    old_upper_bounds = {}
-    for reaction in model.reactions:
-        # if the reaction has a nonzero objective coefficient, then
-        # the same flux should be maintained through that reaction
+        convert_to_irreversible(model)
+
+    lp = solver.create_problem(model, **optimize_kwargs)
+    if not desired_objective_value:
+        solver.solve_problem(lp, objective_sense='maximize')
+        status = solver.get_status(lp)
+        if status != "optimal":
+            revert_to_reversible(model)
+            raise ValueError(
+                "pFBA requires optimal solution status, not {}".format(status))
+        desired_objective_value = solver.get_objective_value(lp)
+
+    for i, reaction in enumerate(model.reactions):
+
         if reaction.objective_coefficient != 0:
-            old_objective_coefficients[reaction] = \
-                reaction.objective_coefficient
-            old_lower_bounds[reaction] = reaction.lower_bound
-            old_upper_bounds[reaction] = reaction.upper_bound
-            x = model.solution.x_dict[reaction.id]
-            reaction.lower_bound = x
-            reaction.upper_bound = x
-            reaction.objective_coefficient = 0
-        else:
-            reaction.objective_coefficient = 1
-    # set to minimize flux
-    optimize_kwargs["objective_sense"] = "minimize"
-    model.optimize(**optimize_kwargs)
-    # make the model back the way it was
-    for reaction in model.reactions:
-        if reaction in old_objective_coefficients:
-            reaction.objective_coefficient = \
-                old_objective_coefficients[reaction]
-            reaction.lower_bound = old_lower_bounds[reaction]
-            reaction.upper_bound = old_upper_bounds[reaction]
-        else:
-            reaction.objective_coefficient = 0
-    # if the minimization problem was successful
-    if model.solution.f is not None:
-        model.solution.f = old_f
-    if not already_irreversible:
-        modify.revert_to_reversible(model)
-    return model.solution
+            # Enforce a certain fraction of the original objective
+            target = (desired_objective_value * fraction_of_optimum /
+                      reaction.objective_coefficient)
+            solver.change_variable_bounds(lp, i, target, reaction.upper_bound)
+
+        # Minimize all reaction fluxes (including objective?)
+        solver.change_variable_objective(lp, i, 1)
+
+    solver.solve_problem(lp, objective_sense='minimize', **optimize_kwargs)
+    solution = solver.format_solution(lp, model)
+
+    # Return the model to its original state
+    #    model.solution = solution
+    revert_to_reversible(model)
+
+    #    if solution.status == "optimal":
+    #        model.solution.f = sum([coeff * reaction.x for reaction, coeff in
+    #                                iteritems(objective_reactions)])
+
+    return solution

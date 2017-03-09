@@ -1,4 +1,6 @@
-from six import iteritems
+# -*- coding: utf-8 -*-
+
+from __future__ import absolute_import
 
 
 def add_SBO(model):
@@ -17,7 +19,7 @@ def add_SBO(model):
         # only doing exchanges
         if len(r.metabolites) != 1:
             continue
-        met_id = list(r.metabolites)[0].id
+        met_id = list(r._metabolites)[0].id
         if r.id.startswith("EX_") and r.id == "EX_" + met_id:
             r.annotation["SBO"] = "SBO:0000627"
         elif r.id.startswith("DM_") and r.id == "DM_" + met_id:

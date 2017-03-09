@@ -1,31 +1,21 @@
-from __future__ import absolute_import
-from os.path import join, abspath, dirname
-import unittest as _unittest
+# -*- coding: utf-8 -*-
+from os.path import abspath, dirname, join
+
+from cobra.io import read_sbml_model
 
 try:
+    import pytest
+    import pytest_benchmark
+except ImportError:
+    pytest = None
+try:
     from cPickle import load as _load
-except:
+except ImportError:
     from pickle import load as _load
-
-from ..io import read_sbml_model
-
-
-available_tests = ['unit_tests', 'solvers', 'flux_analysis', 'io_tests',
-                   'design', 'manipulation']
-
 
 cobra_directory = abspath(join(dirname(abspath(__file__)), ".."))
 cobra_location = abspath(join(cobra_directory, ".."))
-data_directory = join(cobra_directory, "test", "data", "")
-
-salmonella_sbml = join(data_directory, "salmonella.xml")
-salmonella_pickle = join(data_directory, "salmonella.pickle")
-
-ecoli_sbml = join(data_directory, "iJO1366.xml")
-textbook_sbml = join(data_directory, "textbook.xml.gz")
-mini_sbml = join(data_directory, "mini_fbc2.xml")
-
-del abspath, join, dirname
+data_dir = join(cobra_directory, "test", "data", "")
 
 
 def create_test_model(model_name="salmonella"):
@@ -36,35 +26,31 @@ def create_test_model(model_name="salmonella"):
         path to a pickled cobra.Model
 
     """
-
     if model_name == "ecoli":
+        ecoli_sbml = join(data_dir, "iJO1366.xml")
         return read_sbml_model(ecoli_sbml)
     elif model_name == "textbook":
+        textbook_sbml = join(data_dir, "textbook.xml.gz")
         return read_sbml_model(textbook_sbml)
     elif model_name == "mini":
+        mini_sbml = join(data_dir, "mini_fbc2.xml")
         return read_sbml_model(mini_sbml)
-
-    if model_name == "salmonella":
+    elif model_name == "salmonella":
+        salmonella_pickle = join(data_dir, "salmonella.pickle")
         model_name = salmonella_pickle
     with open(model_name, "rb") as infile:
         return _load(infile)
 
 
-def create_test_suite():
-    """create a unittest.TestSuite with available tests"""
-    loader = _unittest.TestLoader()
-    suite = _unittest.TestSuite()
-    for test_name in available_tests:
-        exec("from . import " + test_name)
-        suite.addTests(loader.loadTestsFromModule(eval(test_name)))
-    return suite
+def test_all(args=None):
+    """ alias for running all unit-tests on installed cobra
+    """
+    if pytest:
+        args = args if args else []
 
-suite = create_test_suite()
-
-
-def test_all():
-    """###running unit tests on cobra py###"""
-    status = not _unittest.TextTestRunner(verbosity=2).run(
-        create_test_suite()
-    ).wasSuccessful()
-    return status
+        return pytest.main(
+            ['--pyargs', 'cobra', '--benchmark-skip', '-v', '-rs'] + args
+        ) != 0
+    else:
+        raise ImportError('missing package pytest and pytest_benchmark'
+                          ' required for testing')

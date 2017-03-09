@@ -1,4 +1,17 @@
 #!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+from __future__ import absolute_import
+
+from collections import OrderedDict
+from json import dump as json_dump
+
+import cobra
+from cobra.io import (
+    load_matlab_model, read_sbml_model, save_json_model, save_matlab_model,
+    write_sbml_model)
+from cobra.io.sbml3 import write_sbml2
+
 # This script regenerates pickles of cobra Models.  Should be
 # performed after updating core classes to prevent subtle bugs.
 try:
@@ -6,14 +19,6 @@ try:
 except:
     from pickle import load, dump
 
-from json import dump as json_dump
-from collections import OrderedDict
-
-import cobra
-from cobra.version import get_version
-from cobra.io import read_sbml_model, write_sbml_model, save_matlab_model, \
-    save_json_model
-from cobra.io.sbml3 import write_sbml2
 
 # ecoli
 ecoli_model = read_sbml_model("iJO1366.xml")
@@ -43,7 +48,7 @@ for r in textbook.reactions:
                 "PIt2r"):
         mini.add_reaction(r.copy())
 mini.reactions.ATPM.upper_bound = mini.reactions.PGI.upper_bound
-mini.change_objective("ATPM")  # No biomass
+mini.objective = "ATPM"  # No biomass
 
 # add in some information from iJO1366
 mini.add_reaction(ecoli_model.reactions.LDH_D.copy())
@@ -81,6 +86,9 @@ write_sbml_model(mini, "mini_fbc2.xml.bz2")
 write_sbml_model(mini, "mini_fbc2.xml.gz")
 write_sbml2(mini, "mini_fbc1.xml", use_fbc_package=True)
 write_sbml_model(mini, "mini_cobra.xml", use_fbc_package=False)
+raven = load_matlab_model("raven.mat")
+with open("raven.pickle", "wb") as outfile:
+    dump(raven, outfile, protocol=2)
 
 # fva results
 fva_result = cobra.flux_analysis.flux_variability_analysis(textbook)
@@ -89,3 +97,9 @@ for key in sorted(fva_result):
     clean_result[key] = {k: round(v, 5) for k, v in fva_result[key].items()}
 with open("textbook_fva.json", "w") as outfile:
     json_dump(clean_result, outfile)
+
+# textbook solution
+# TODO: this needs a reference solution rather than circular solution checking!
+solution = cobra.flux_analysis.parsimonious.optimize_minimal_flux(textbook)
+with open('textbook_solution.pickle', 'wb') as f:
+    dump(solution, f, protocol=2)

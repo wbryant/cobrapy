@@ -1,6 +1,11 @@
+# -*- coding: utf-8 -*-
+from __future__ import absolute_import
+
+from cobra.core.solution import LegacySolution
+
 from cylp.cy import CyClpSimplex
-from cylp.py.modeling.CyLPModel import CyLPArray
 from cylp.cy.CyCoinPackedMatrix import CyCoinPackedMatrix
+from cylp.py.modeling.CyLPModel import CyLPArray
 
 solver_name = "coin"
 _status_translation = {"primal infeasible": "infeasible",
@@ -27,7 +32,7 @@ class Coin(CyClpSimplex):
 
 
 def create_problem(cobra_model, objective_sense="maximize", **kwargs):
-    m = cobra_model.to_array_based_model()
+    m = cobra_model.to_array_based_model(deepcopy_model=True)
     lp = Coin()
     v = lp.addVariable("v", len(m.reactions))
     for i, rxn in enumerate(m.reactions):
@@ -90,11 +95,10 @@ def solve_problem(lp, **kwargs):
 
 
 def format_solution(lp, cobra_model):
-    Solution = cobra_model.solution.__class__
     status = get_status(lp)
     if status != "optimal":  # todo handle other possible
-        return Solution(None, status=status)
-    solution = Solution(lp.objectiveValue_, status=status)
+        return LegacySolution(None, status=status)
+    solution = LegacySolution(lp.objectiveValue_, status=status)
     x = lp.primalVariableSolution_["v"].tolist()
     solution.x_dict = {r.id: x[i] for i, r in enumerate(cobra_model.reactions)}
     solution.x = x

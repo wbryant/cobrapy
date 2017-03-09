@@ -1,7 +1,12 @@
-from multiprocessing import Queue, Process, cpu_count
+# -*- coding: utf-8 -*-
 
-from ..solvers import get_solver_name, solver_dict
+from __future__ import absolute_import
+
+from multiprocessing import Process, Queue, cpu_count
+
 from six import iteritems
+
+from cobra.solvers import get_solver_name, solver_dict
 
 
 def compute_fba_deletion_worker(cobra_model, solver, job_queue, output_queue,
@@ -58,6 +63,7 @@ class CobraDeletionPool(object):
     # reverting the object after simulating a deletion, and are written to be
     # flexible enough so they can be used in most applications instead of
     # writing a custom worker each time.
+
     def __init__(self, cobra_model, n_processes=None, solver=None, **kwargs):
         if n_processes is None:
             n_processes = min(cpu_count(), 4)
@@ -88,7 +94,10 @@ class CobraDeletionPool(object):
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        self.terminate()
+        try:
+            self.terminate()
+        except:
+            pass
 
     def submit(self, indexes, label=None):
         self.job_queue.put((indexes, label))
@@ -122,6 +131,7 @@ class CobraDeletionPool(object):
 
 class CobraDeletionMockPool(object):
     """Mock pool solves LP's in the same process"""
+
     def __init__(self, cobra_model, n_processes=1, solver=None, **kwargs):
         if n_processes != 1:
             from warnings import warn

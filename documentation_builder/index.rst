@@ -1,7 +1,7 @@
 Documentation for COBRApy
 =========================
-For installation instructions, please see `INSTALL.md
-<https://github.com/opencobra/cobrapy/blob/master/INSTALL.md>`_.
+For installation instructions, please see `INSTALL.rst
+<https://github.com/opencobra/cobrapy/blob/master/INSTALL.rst>`_.
 
 Many of the examples below are viewable as IPython notebooks, which can
 be viewed at `nbviewer
@@ -17,11 +17,10 @@ be viewed at `nbviewer
     simulating
     deletions
     phenotype_phase_plane
-    milp
-    qp
+    sampling
     loopless
-    gapfilling
-    solvers
+	solvers
+	constraints-objectives
     pymatbridge
     faq
     cobra
@@ -33,4 +32,3 @@ Indices and tables
 * :ref:`genindex`
 * :ref:`modindex`
 * :ref:`search`
-

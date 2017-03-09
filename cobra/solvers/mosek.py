@@ -1,9 +1,11 @@
+# -*- coding: utf-8 -*-
 from __future__ import absolute_import, print_function
 
 import mosek
-
-from six.moves import zip
 from six import iteritems, string_types
+from six.moves import zip
+
+from cobra.core.solution import LegacySolution
 
 env = mosek.Env()
 
@@ -71,6 +73,7 @@ def create_problem(cobra_model, objective_sense="maximize",
     lp.putdouparam(mosek.dparam.basis_tol_s, 1e-9)
     lp.putdouparam(mosek.dparam.basis_rel_tol_s, 0.)
     lp.putdouparam(mosek.dparam.simplex_abs_tol_piv, 1e-12)
+    lp.putdouparam(mosek.dparam.intpnt_tol_rel_gap, 1e-6)
     lp.putdouparam(mosek.dparam.presolve_tol_aij, 1e-15)
     lp.putdouparam(mosek.dparam.presolve_tol_abs_lindep, 0.)
     lp.putdouparam(mosek.dparam.presolve_tol_s, 0.)
@@ -124,6 +127,7 @@ def set_objective_sense(lp, objective_sense):
 
 
 def set_parameter(lp, parameter_name, parameter_value):
+    parameter_name = parameter_name.lower()
     parameter_name = param_aliases.get(parameter_name, parameter_name)
     if parameter_name == "verbose":
         if parameter_value:
@@ -197,8 +201,8 @@ def format_solution(lp, cobra_model):
     mosek_status = lp.getsolsta(soltype)
     status = status_dict.get(mosek_status, str(mosek_status))
     if status != "optimal":
-        return cobra_model.solution.__class__(None, status=status)
-    solution = cobra_model.solution.__class__(get_objective_value(lp))
+        return LegacySolution(None, status=status)
+    solution = LegacySolution(get_objective_value(lp))
     solution.status = status
     x = [0] * len(cobra_model.reactions)
     lp.getxx(soltype, x)

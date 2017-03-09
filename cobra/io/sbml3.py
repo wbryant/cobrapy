@@ -1,33 +1,40 @@
-from collections import defaultdict
-from warnings import warn, catch_warnings, simplefilter
-from decimal import Decimal
-from ast import parse as ast_parse, Name, Or, And, BoolOp
-from gzip import GzipFile
-from bz2 import BZ2File
-from tempfile import NamedTemporaryFile
+# -*- coding: utf-8 -*-
+
+from __future__ import absolute_import
+
 import re
+from ast import And, BoolOp, Name, Or
+from bz2 import BZ2File
+from collections import defaultdict
+from decimal import Decimal
+from gzip import GzipFile
+from tempfile import NamedTemporaryFile
+from warnings import catch_warnings, simplefilter, warn
 
 from six import iteritems, string_types
 
-from .. import Metabolite, Reaction, Gene, Model
-from ..core.Gene import parse_gpr
-from ..manipulation.modify import _renames
-from ..manipulation.validate import check_reaction_bounds, \
-    check_metabolite_compartment_formula
+from cobra.core import Gene, Metabolite, Model, Reaction
+from cobra.core.gene import parse_gpr
+from cobra.manipulation.modify import _renames
+from cobra.manipulation.validate import (
+    check_metabolite_compartment_formula, check_reaction_bounds)
+from cobra.util.solver import set_objective
 
 try:
-    from lxml.etree import parse, Element, SubElement, \
-        ElementTree, register_namespace, ParseError, XPath
+    from lxml.etree import (
+        parse, Element, SubElement, ElementTree, register_namespace,
+        ParseError, XPath)
     _with_lxml = True
 except ImportError:
-    warn("Install lxml for faster SBML I/O")
     _with_lxml = False
     try:
-        from xml.etree.cElementTree import parse, Element, SubElement, \
-            ElementTree, register_namespace, ParseError
+        from xml.etree.cElementTree import (
+            parse, Element, SubElement, ElementTree, register_namespace,
+            ParseError)
     except ImportError:
-        from xml.etree.ElementTree import parse, Element, SubElement, \
-            ElementTree, register_namespace, ParseError
+        from xml.etree.ElementTree import (
+            parse, Element, SubElement, ElementTree, register_namespace,
+            ParseError)
 
 # use sbml level 2 from sbml.py (which uses libsbml). Eventually, it would
 # be nice to use the libSBML converters directly instead.
@@ -36,12 +43,12 @@ try:
 except ImportError:
     libsbml = None
 else:
-    from .sbml import create_cobra_model_from_sbml_file as read_sbml2
-    from .sbml import write_cobra_model_to_sbml_file as write_sbml2
+    from cobra.io.sbml import create_cobra_model_from_sbml_file as read_sbml2
+    from cobra.io.sbml import write_cobra_model_to_sbml_file as write_sbml2
 
 try:
     from sympy import Basic
-except:
+except ImportError:
     class Basic:
         pass
 
@@ -113,7 +120,9 @@ def get_attrib(tag, attribute, type=lambda x: x, require=False):
         msg = "required attribute '%s' not found in tag '%s'" % \
                              (attribute, tag.tag)
         if tag.get("id") is not None:
-            msg += "with id '%s'" % tag.get("id")
+            msg += " with id '%s'" % tag.get("id")
+        elif tag.get("name") is not None:
+            msg += " with name '%s'" % tag.get("name")
         raise CobraSBMLError(msg)
     return type(value) if value is not None else None
 
@@ -253,7 +262,8 @@ def parse_xml_into_model(xml, number=float):
                           xml_model.findall(COMPARTMENT_XPATH)}
     # add metabolites
     for species in xml_model.findall(SPECIES_XPATH % 'false'):
-        met = Metabolite(clip(species.get("id"), "M_"))
+        met = get_attrib(species, "id", require=True)
+        met = Metabolite(clip(met, "M_"))
         met.name = species.get("name")
         annotate_cobra_from_sbml(met, species)
         met.compartment = species.get("compartment")
@@ -293,7 +303,8 @@ def parse_xml_into_model(xml, number=float):
     reactions = []
     for sbml_reaction in xml_model.iterfind(
             ns("sbml:listOfReactions/sbml:reaction")):
-        reaction = Reaction(clip(sbml_reaction.get("id"), "R_"))
+        reaction = get_attrib(sbml_reaction, "id", require=True)
+        reaction = Reaction(clip(reaction, "R_"))
         reaction.name = sbml_reaction.get("name")
         annotate_cobra_from_sbml(reaction, sbml_reaction)
         lb_id = get_attrib(sbml_reaction, "fbc:lowerFluxBound", require=True)
@@ -343,7 +354,10 @@ def parse_xml_into_model(xml, number=float):
             gpr = gpr[1:-1].strip()
         gpr = gpr.replace(SBML_DOT, ".")
         reaction.gene_reaction_rule = gpr
-    model.add_reactions(reactions)
+    try:
+        model.add_reactions(reactions)
+    except ValueError as e:
+        warn(str(e))
 
     # objective coefficients are handled after all reactions are added
     obj_list = xml_model.find(ns("fbc:listOfObjectives"))
@@ -356,11 +370,15 @@ def parse_xml_into_model(xml, number=float):
         rxn_id = clip(get_attrib(sbml_objective, "fbc:reaction"), "R_")
         try:
             objective_reaction = model.reactions.get_by_id(rxn_id)
-        except KeyError as e:
+        except KeyError:
             raise CobraSBMLError("Objective reaction '%s' not found" % rxn_id)
-        objective_reaction.objective_coefficient = \
-            get_attrib(sbml_objective, "fbc:coefficient", type=number)
-
+        try:
+            coefficients = {objective_reaction: get_attrib(
+                sbml_objective, "fbc:coefficient", type=number)}
+        except ValueError as e:
+            warn(str(e))
+        else:
+            set_objective(model, coefficients)
     return model
 
 
@@ -436,10 +454,10 @@ def model_to_xml(cobra_model, units=True):
             return param_id
 
     # add in compartments
-    compartmenst_list = SubElement(xml_model, "listOfCompartments")
+    compartments_list = SubElement(xml_model, "listOfCompartments")
     compartments = cobra_model.compartments
     for compartment, name in iteritems(compartments):
-        SubElement(compartmenst_list, "compartment", id=compartment, name=name,
+        SubElement(compartments_list, "compartment", id=compartment, name=name,
                    constant="true")
 
     # add in metabolites
@@ -534,20 +552,28 @@ def model_to_xml(cobra_model, units=True):
 
 
 def read_sbml_model(filename, number=float, **kwargs):
+    if not _with_lxml:
+        warn("Install lxml for faster SBML I/O", ImportWarning)
     xmlfile = parse_stream(filename)
     xml = xmlfile.getroot()
     # use libsbml if not l3v1 with fbc v2
     if xml.get("level") != "3" or xml.get("version") != "1" or \
             get_attrib(xml, "fbc:required") is None:
         if libsbml is None:
-            raise Exception("libSBML required for fbc < 2")
+            raise ImportError("libSBML required for fbc < 2")
         # libsbml needs a file string, so write to temp file if a file handle
         if hasattr(filename, "read"):
             with NamedTemporaryFile(suffix=".xml", delete=False) as outfile:
                 xmlfile.write(outfile, encoding="UTF-8")
             filename = outfile.name
         return read_sbml2(filename, **kwargs)
-    return parse_xml_into_model(xml, number=number, **kwargs)
+    try:
+        return parse_xml_into_model(xml, number=number, **kwargs)
+    except Exception:
+        raise CobraSBMLError(
+            "Something went wrong reading the model. You can get a detailed "
+            "report using the `cobra.io.sbml3.validate_sbml_model` function "
+            "or using the online validator at http://sbml.org/validator")
 
 
 id_required = {ns(i) for i in ("sbml:model", "sbml:reaction:", "sbml:species",
@@ -558,7 +584,29 @@ invalid_id_detector = re.compile("|".join(re.escape(i[0]) for i in _renames))
 
 
 def validate_sbml_model(filename, check_model=True):
-    """returns the model along with a list of errors"""
+    """Returns the model along with a list of errors.
+
+    Parameters
+    ----------
+    filename : str
+        The filename of the SBML model to be validated.
+    check_model: bool, optional
+        Whether to also check some basic model properties such as reaction
+        boundaries and compartment formulas.
+
+    Returns
+    -------
+    model : :class:`~cobra.core.Model.Model` object
+        The cobra model if the file could be read succesfully or None
+        otherwise.
+    errors : dict
+        Warnings and errors grouped by their respective types.
+
+    Raises
+    ------
+    CobraSBMLError
+        If the file is not a valid SBML Level 3 file with FBC.
+    """
     xmlfile = parse_stream(filename)
     xml = xmlfile.getroot()
     # use libsbml if not l3v1 with fbc v2
@@ -566,10 +614,10 @@ def validate_sbml_model(filename, check_model=True):
             get_attrib(xml, "fbc:required") is None:
         raise CobraSBMLError("XML is not SBML level 3 v1 with fbc v2")
 
-    sbml_errors = []
+    errors = {k: [] for k in ("validator", "warnings", "SBML errors", "other")}
 
-    def err(err_msg):
-        sbml_errors.append(err_msg)
+    def err(err_msg, group="validator"):
+        errors[group].append(err_msg)
 
     # make sure there is exactly one model
     xml_models = xml.findall(ns("sbml:model"))
@@ -624,9 +672,12 @@ def validate_sbml_model(filename, check_model=True):
         try:
             model = parse_xml_into_model(xml)
         except CobraSBMLError as e:
-            err(str(e))
-            return (None, sbml_errors)
-    sbml_errors.extend(str(i.message) for i in warning_list)
+            err(str(e), "SBML errors")
+            return (None, errors)
+        except Exception as e:
+            err(str(e), "other")
+            return (None, errors)
+    errors["warnings"].extend(str(i.message) for i in warning_list)
 
     # check genes
     xml_genes = {
@@ -637,16 +688,18 @@ def validate_sbml_model(filename, check_model=True):
             err("No gene specfied with id 'G_%s'" % gene.id)
 
     if check_model:
-        sbml_errors.extend(check_reaction_bounds(model))
-        sbml_errors.extend(check_metabolite_compartment_formula(model))
+        errors["validator"].extend(check_reaction_bounds(model))
+        errors["validator"].extend(check_metabolite_compartment_formula(model))
 
-    return model, sbml_errors
+    return model, errors
 
 
 def write_sbml_model(cobra_model, filename, use_fbc_package=True, **kwargs):
+    if not _with_lxml:
+        warn("Install lxml for faster SBML I/O", ImportWarning)
     if not use_fbc_package:
         if libsbml is None:
-            raise Exception("libSBML required to write non-fbc models")
+            raise ImportError("libSBML required to write non-fbc models")
         write_sbml2(cobra_model, filename, use_fbc_package=False, **kwargs)
         return
     # create xml
